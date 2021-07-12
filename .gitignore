@@ -1,0 +1,4 @@
+build.bat
+zig-cache/
+zig-out/
+zig_exe_path.txt
