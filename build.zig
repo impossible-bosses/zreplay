@@ -14,9 +14,14 @@ pub fn build(b: *std.build.Builder) void
     exe.linkLibC();
     exe.install();
 
-    const run_step = b.step("run", "Run the app");
-    const run_cmd = exe.run();
-    run_cmd.step.dependOn(b.getInstallStep());
-    run_cmd.addArg("ent.w3g");
-    run_step.dependOn(&run_cmd.step);
+    const runStep = b.step("run", "Run the app");
+    const runCmd = exe.run();
+    runCmd.step.dependOn(b.getInstallStep());
+    runCmd.addArg("ent.w3g");
+    runStep.dependOn(&runCmd.step);
+
+    const testBuildStep = b.addTest("src/main.zig");
+    testBuildStep.setBuildMode(mode);
+    const testStep = b.step("test", "Run library tests");
+    testStep.dependOn(&testBuildStep.step);
 }
