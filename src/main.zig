@@ -151,6 +151,7 @@ fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
                 var j: u32 = 0;
                 while (j < actionData.len) {
                     const actionId = try read(u8, actionData, &j);
+                    std.log.info("ind={} i={} actionId={X}", .{iPtr.*, i, actionId});
                     switch (actionId) {
                         0x01 => {
                             // pause game
@@ -213,6 +214,7 @@ fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
                             j += 12;
                         },
                         0x1A => {
+                            // pre subselection
                         },
                         0x1B => {
                             j += 9;
@@ -274,11 +276,16 @@ fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
                             // continue game (block B)
                             j += 16;
                         },
+                        0x6B => {
+                            // MMD
+                            // TODO all data
+                            break;
+                        },
                         0x75 => {
                             _ = try read(u8, actionData, &j); // unknown
                         },
                         else => {
-                            std.log.err("Unknown action ID {}", .{actionId});
+                            std.log.err("Unknown action ID {X}", .{actionId});
                             return error.UnknownActionId;
                         }
                     }
@@ -308,7 +315,7 @@ fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
             const seconds = try read(u32, buf, iPtr);
         },
         else => {
-            std.log.err("Unknown block ID {}", .{id});
+            std.log.err("Unknown block ID {X}", .{id});
             return error.UnknownBlockId;
         }
     }
