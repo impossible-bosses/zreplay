@@ -31,6 +31,23 @@ const DataBlockHeader = packed struct
     unknown: u32, // checksum?
 };
 
+const SlotRecord = packed struct
+{
+    playerId: u8,
+    mapDownloadPercent: u8,
+    status: u8,
+    flag: u8,
+    teamNumber: u8,
+    color: u8,
+    raceFlags: u8,
+    computerAiStrength: u8,
+    handicapPercent: u8,
+};
+
+const Block = struct
+{
+};
+
 fn verifyHeaderString(string: [28]u8) bool
 {
     if (!std.mem.eql(u8, string[0..26], "Warcraft III recorded game")) {
@@ -47,19 +64,53 @@ fn verifySubHeaderString(string: [4]u8) bool
     return std.mem.eql(u8, &string, "PX3W") or std.mem.eql(u8, &string, "3RAW");
 }
 
-fn readInteger(comptime intType: type, buf: []const u8, iPtr: *u32) intType
+fn peekPtr(comptime theType: type, buf: []const u8, i: u32) !*const theType
 {
-    const intSize = @sizeOf(intType);
-    assert(intSize <= 8);
-    var slice: [8]u8 align(8) = undefined;
-    const i = iPtr.*;
-    std.mem.copy(u8, &slice, buf[i..i+intSize]);
-    const valuePtr = @ptrCast(*const intType, &slice);
-    iPtr.* += intSize;
-    return valuePtr.*;
+    comptime {
+        assert(@alignOf(theType) == 1);
+    }
+    if (i + @sizeOf(theType) > buf.len) {
+        return error.OutOfBounds;
+    }
+    return @ptrCast(*const theType, &buf[i]);
 }
 
-fn readStringZ(buf: []const u8, iPtr: *u32) ?[]const u8
+fn peek(comptime theType: type, buf: []const u8, i: u32) !theType
+{
+    const size = comptime @sizeOf(theType);
+    if (i + size > buf.len) {
+        return error.OutOfBounds;
+    }
+    const a = comptime @alignOf(theType);
+    if (a == 1) {
+        return (try peekPtr(theType, buf, i)).*;
+    }
+    else {
+        comptime {
+            assert(size <= 8);
+        }
+        var slice: [8]u8 align(8) = undefined;
+        std.mem.copy(u8, &slice, buf[i..i+size]);
+        const ptr = @ptrCast(*const theType, &slice);
+        return ptr.*;
+    }
+}
+
+fn readPtr(comptime theType: type, buf: []const u8, iPtr: *u32) !*const theType
+{
+    const ptr = try peekPtr(theType, buf, iPtr.*);
+    iPtr.* += @sizeOf(theType);
+    return ptr;
+}
+
+fn read(comptime theType: type, buf: []const u8, iPtr: *u32) !theType
+{
+    const value = try peek(theType, buf, iPtr.*);
+    iPtr.* += @sizeOf(theType);
+    return value;
+}
+
+fn readStringZ(buf: []const u8, iPtr: *u32) !?[]const u8
 {
     var i: u32 = iPtr.*;
     while (i < buf.len and buf[i] != 0) : (i += 1) {}
@@ -72,24 +123,216 @@ fn readStringZ(buf: []const u8, iPtr: *u32) ?[]const u8
     return buf[iPrev..i];
 }
 
+fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
+{
+    const id = try read(u8, buf, iPtr);
+    switch (id) {
+        0x17 => {
+            // leave game
+            iPtr.* += 13;
+        },
+        0x1A, 0x1B, 0x1C => {
+            // unknown
+            iPtr.* += 4;
+        },
+        0x1E, 0x1F => {
+            // TimeSlot
+            const nBytes = try read(u16, buf, iPtr);
+            if (nBytes < 2) {
+                return error.TimeSlotBytes;
+            }
+            const time = try peek(u16, buf, iPtr.*);
+            const data = buf[(iPtr.*)+2..(iPtr.*)+nBytes];
+            var i: u32 = 0;
+            while (i < data.len) {
+                const playerId = try read(u8, data, &i);
+                const actionBytes = try read(u16, data, &i);
+                const actionData = data[i..i+actionBytes];
+                var j: u32 = 0;
+                while (j < actionData.len) {
+                    const actionId = try read(u8, actionData, &j);
+                    switch (actionId) {
+                        0x01 => {
+                            // pause game
+                        },
+                        0x02 => {
+                            // resume game
+                        },
+                        0x03 => {
+                            // single-player set game speed (menu)
+                            const gameSpeed = try read(u8, actionData, &j);
+                        },
+                        0x04 => {
+                            // single-player set game speed (num+)
+                        },
+                        0x05 => {
+                            // single-player set game speed (num-)
+                        },
+                        0x06 => {
+                            // save game
+                            const saveName = try readStringZ(actionData, &j);
+                        },
+                        0x07 => {
+                            // save game finished
+                            _ = try read(u32, actionData, &j); // unknown
+                        },
+                        0x10 => {
+                            // unit/building ability (no params)
+                            j += 14;
+                        },
+                        0x11 => {
+                            // unit/building ability (pos)
+                            j += 21;
+                        },
+                        0x12 => {
+                            // unit/building ability (pos and object ID)
+                            j += 29;
+                        },
+                        0x13 => {
+                            // give item to unit / drop item on ground
+                            // (pos, object ID A and B)
+                            j += 37;
+                        },
+                        0x14 => {
+                            j += 42;
+                        },
+                        0x16 => {
+                            const mode = try read(u8, actionData, &j);
+                            const n = try read(u16, actionData, &j);
+                            j += n * 8;
+                        },
+                        0x17 => {
+                            const groupNumber = try read(u8, actionData, &j);
+                            const n = try read(u16, actionData, &j);
+                            j += n * 8;
+                        },
+                        0x18 => {
+                            j += 2;
+                        },
+                        0x19 => {
+                            j += 12;
+                        },
+                        0x1A => {
+                        },
+                        0x1B => {
+                            j += 9;
+                        },
+                        0x1C => {
+                            j += 9;
+                        },
+                        0x1D => {
+                            j += 8;
+                        },
+                        0x1E => {
+                            j += 5;
+                        },
+                        0x21 => {
+                            j += 8;
+                        },
+                        0x20, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
+                        0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32 => {
+                            return error.NoSinglePlayerForNow;
+                            // single-player cheats
+                            // switch (actionId) {
+                            //     0x20, 0x22, 0x23,  => {
+                            //         j += 1,
+                            //     }
+                            // }
+                        },
+                        0x50 => {
+                            j += 5;
+                        },
+                        0x51=> {
+                            j += 9;
+                        },
+                        0x60 => {
+                            _ = try read(u32, actionData, &j); // unknown
+                            _ = try read(u32, actionData, &j); // unknown
+                            const command = try readStringZ(actionData, &j);
+                        },
+                        0x61 => {
+                            // ESC pressed
+                        },
+                        0x62 => {
+                            j += 12;
+                        },
+                        0x66 => {
+                            // enter choose hero skill submenu
+                        },
+                        0x67 => {
+                            // enter choose building submenu
+                        },
+                        0x68 => {
+                            // minimap ping
+                            j += 12;
+                        },
+                        0x69 => {
+                            // continue game (block A)
+                            j += 16;
+                        },
+                        0x6A => {
+                            // continue game (block B)
+                            j += 16;
+                        },
+                        0x75 => {
+                            _ = try read(u8, actionData, &j); // unknown
+                        },
+                        else => {
+                            std.log.err("Unknown action ID {}", .{actionId});
+                            return error.UnknownActionId;
+                        }
+                    }
+                    // TODO parse action IDs
+                }
+                i += actionBytes;
+            }
+
+            iPtr.* += nBytes;
+        },
+        0x20 => {
+            // player chat message
+            const playerId = try read(u8, buf, iPtr);
+            const nBytes = try read(u16, buf, iPtr);
+            iPtr.* += nBytes;
+        },
+        0x22 => {
+            // unknown
+            iPtr.* += 5;
+        },
+        0x23 => {
+            // unknown
+            iPtr.* += 10;
+        },
+        0x2F => {
+            const mode = try read(u32, buf, iPtr);
+            const seconds = try read(u32, buf, iPtr);
+        },
+        else => {
+            std.log.err("Unknown block ID {}", .{id});
+            return error.UnknownBlockId;
+        }
+    }
+}
+
 fn parseDecompressed(decompressed: []const u8, allocator: *std.mem.Allocator) !void
 {
     // player record
     var ind: u32 = 0;
-    const unknown = readInteger(u32, decompressed, &ind);
-    const recordId = readInteger(u8, decompressed, &ind);
+    _ = try read(u32, decompressed, &ind); // unknown
+    const recordId = try read(u8, decompressed, &ind);
     if (recordId != 0) {
         return error.NonHostPlayerRecord;
     }
-    const playerId = readInteger(u8, decompressed, &ind);
-    const playerName = readStringZ(decompressed, &ind) orelse {
+    const playerId = try read(u8, decompressed, &ind);
+    const playerName = (try readStringZ(decompressed, &ind)) orelse {
         return error.PlayerName;
     };
-    const extraBytes = readInteger(u8, decompressed, &ind);
+    const extraBytes = try read(u8, decompressed, &ind);
     ind += extraBytes; // nothing important here
+    std.log.info("{}: {s}", .{playerId, playerName});
 
     // game name
-    const gameName = readStringZ(decompressed, &ind) orelse {
+    const gameName = (try readStringZ(decompressed, &ind)) orelse {
         return error.GameName;
     };
     std.log.info("game name: {s}", .{gameName});
@@ -97,14 +340,14 @@ fn parseDecompressed(decompressed: []const u8, allocator: *std.mem.Allocator) !v
     ind += 1; // null byte
 
     // encoded string
-    const encoded = readStringZ(decompressed, &ind) orelse {
+    const encoded = (try readStringZ(decompressed, &ind)) orelse {
         return error.EncodedString;
     };
     var decoded = std.ArrayList(u8).init(allocator);
     defer decoded.deinit();
     var mask: u8 = undefined;
     for (encoded) |char, i| {
-        const imod8: u3 = @intCast(u3, i % 8);
+        const imod8 = @intCast(u3, i % 8);
         if (imod8 == 0) {
             mask = char;
         }
@@ -120,6 +363,60 @@ fn parseDecompressed(decompressed: []const u8, allocator: *std.mem.Allocator) !v
 
     // TODO flags from decoded
     std.log.info("{s}", .{decoded.items});
+
+    const playerCount = try read(u32, decompressed, &ind);
+    const gameType = try read(u32, decompressed, &ind);
+    const languageId = try read(u32, decompressed, &ind);
+
+    const recordId2 = try peek(u8, decompressed, ind);
+    if (recordId2 == 0x16) {
+        while (true) {
+            const rid = try peek(u8, decompressed, ind);
+            if (rid != 0x16) {
+                break;
+            }
+            ind += 1;
+            const pId = try read(u8, decompressed, &ind);
+            const pName = try readStringZ(decompressed, &ind);
+            const eb = try read(u8, decompressed, &ind);
+            ind += eb;
+            _ = try read(u32, decompressed, &ind); // unknown
+
+            std.log.info("{}: {s}", .{pId, pName});
+        }
+    }
+
+    const slotRecordId = try read(u8, decompressed, &ind);
+    if (slotRecordId != 0x19) {
+        return error.BadSlotRecordId;
+    }
+    const nBytes = try read(u16, decompressed, &ind);
+    const nSlotRecords = try read(u8, decompressed, &ind);
+    var slot: u8 = 0;
+    while (slot < nSlotRecords) : (slot += 1) {
+        const slotRecordPtr = try readPtr(SlotRecord, decompressed, &ind);
+        std.log.info("{}", .{slotRecordPtr.*});
+    }
+    const seed = try read(u32, decompressed, &ind);
+    const selectMode = try read(u8, decompressed, &ind);
+    const startSpotCount = try read(u8, decompressed, &ind);
+
+    // replay data blocks
+    var numBlocks: u32 = 0;
+    defer std.log.info("ind={} numBlocks={}", .{ind, numBlocks});
+    while (ind < decompressed.len) {
+        const blockId = try peek(u8, decompressed, ind);
+        if (blockId == 0) {
+            // expected trailing zeroes in decompressed data
+            break;
+        }
+        var block: Block = undefined;
+        parseBlock(&block, decompressed, &ind) catch |err| {
+            std.log.err("Error when parsing block {}, id {X}, ind {}", .{numBlocks, blockId, ind});
+            return err;
+        };
+        numBlocks += 1;
+    }
 }
 
 pub fn main() void
@@ -248,26 +545,26 @@ test
     };
 
     i = 0;
-    assert(readInteger(u32, &testBuffer, &i) == 272);
+    assert((try read(u32, &testBuffer, &i)) == 272);
     assert(i == 4);
-    assert(readInteger(u8, &testBuffer, &i) == 0);
+    assert((try read(u8, &testBuffer, &i)) == 0);
     assert(i == 5);
-    assert(readInteger(u8, &testBuffer, &i) == 3);
+    assert((try read(u8, &testBuffer, &i)) == 3);
     assert(i == 6);
 
     i = 0;
-    assert(readInteger(u16, &testBuffer, &i) == 272);
+    assert((try read(u16, &testBuffer, &i)) == 272);
     assert(i == 2);
-    assert(readInteger(u32, &testBuffer, &i) == 50331648);
+    assert((try read(u32, &testBuffer, &i)) == 50331648);
     assert(i == 6);
 
     i = 0;
-    assert(readInteger(u8, &testBuffer, &i) == 16);
+    assert((try read(u8, &testBuffer, &i)) == 16);
     assert(i == 1);
-    assert(readInteger(u8, &testBuffer, &i) == 1);
+    assert((try read(u8, &testBuffer, &i)) == 1);
     assert(i == 2);
-    assert(readInteger(u16, &testBuffer, &i) == 0);
+    assert((try read(u16, &testBuffer, &i)) == 0);
     assert(i == 4);
-    assert(readInteger(u16, &testBuffer, &i) == 768);
+    assert((try read(u16, &testBuffer, &i)) == 768);
     assert(i == 6);
 }
