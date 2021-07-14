@@ -48,6 +48,9 @@ const Block = struct
 {
 };
 
+const IdCountMapType = std.AutoHashMap(u32, u32);
+var idCountMap_: IdCountMapType = undefined;
+
 fn verifyHeaderString(string: [28]u8) bool
 {
     if (!std.mem.eql(u8, string[0..26], "Warcraft III recorded game")) {
@@ -123,6 +126,14 @@ fn readStringZ(buf: []const u8, iPtr: *u32) !?[]const u8
     return buf[iPrev..i];
 }
 
+fn idToString(id: u32) [4]u8
+{
+    const bytes = @ptrCast(*align(4) const [4]u8, &id);
+    return [4]u8 {
+        bytes[3], bytes[2], bytes[1], bytes[0]
+    };
+}
+
 fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
 {
     const id = try read(u8, buf, iPtr);
@@ -151,7 +162,6 @@ fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
                 var j: u32 = 0;
                 while (j < actionData.len) {
                     const actionId = try read(u8, actionData, &j);
-                    std.log.info("ind={} i={} actionId={X}", .{iPtr.*, i, actionId});
                     switch (actionId) {
                         0x01 => {
                             // pause game
@@ -179,56 +189,110 @@ fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
                         },
                         0x10 => {
                             // unit/building ability (no params)
-                            j += 14;
+                            const abilityFlags = try read(u16, actionData, &j);
+                            const itemId = try read(u32, actionData, &j);
+                            _ = try read(u32, actionData, &j); // unknown
+                            _ = try read(u32, actionData, &j); // unknown
                         },
                         0x11 => {
                             // unit/building ability (pos)
-                            j += 21;
+                            const abilityFlags = try read(u16, actionData, &j);
+                            const itemId = try read(u32, actionData, &j);
+                            _ = try read(u32, actionData, &j); // unknown
+                            _ = try read(u32, actionData, &j); // unknown
+                            const targetX = try read(u32, actionData, &j);
+                            const targetY = try read(u32, actionData, &j);
                         },
                         0x12 => {
                             // unit/building ability (pos and object ID)
-                            j += 29;
+                            const abilityFlags = try read(u16, actionData, &j);
+                            const itemId = try read(u32, actionData, &j);
+                            _ = try read(u32, actionData, &j); // unknown
+                            _ = try read(u32, actionData, &j); // unknown
+                            const targetX = try read(u32, actionData, &j);
+                            const targetY = try read(u32, actionData, &j);
+                            const objId1 = try read(u32, actionData, &j);
+                            const objId2 = try read(u32, actionData, &j);
                         },
                         0x13 => {
                             // give item to unit / drop item on ground
                             // (pos, object ID A and B)
-                            j += 37;
+                            const abilityFlags = try read(u16, actionData, &j);
+                            const itemId = try read(u32, actionData, &j);
+                            _ = try read(u32, actionData, &j); // unknown
+                            _ = try read(u32, actionData, &j); // unknown
+                            const targetX = try read(u32, actionData, &j);
+                            const targetY = try read(u32, actionData, &j);
+                            const objId1 = try read(u32, actionData, &j);
+                            const objId2 = try read(u32, actionData, &j);
+                            const itemObjId1 = try read(u32, actionData, &j);
+                            const itemObjId2 = try read(u32, actionData, &j);
                         },
                         0x14 => {
-                            j += 42;
+                            // unit/building ability
+                            // (two target positions and two item IDs)
+                            const abilityFlags = try read(u16, actionData, &j);
+                            const itemId1 = try read(u32, actionData, &j);
+                            _ = try read(u32, actionData, &j); // unknown
+                            _ = try read(u32, actionData, &j); // unknown
+                            const targetX1 = try read(u32, actionData, &j);
+                            const targetY1 = try read(u32, actionData, &j);
+
+                            const itemId2 = try read(u32, actionData, &j);
+                            j += 9; // unknown
+                            const targetX2 = try read(u32, actionData, &j);
+                            const targetY2 = try read(u32, actionData, &j);
                         },
                         0x16 => {
+                            // change selection (unit, building, area)
                             const mode = try read(u8, actionData, &j);
                             const n = try read(u16, actionData, &j);
                             j += n * 8;
                         },
                         0x17 => {
+                            // assign group hotkey
                             const groupNumber = try read(u8, actionData, &j);
                             const n = try read(u16, actionData, &j);
                             j += n * 8;
                         },
                         0x18 => {
-                            j += 2;
+                            // select group hotkey
+                            const groupNumber = try read(u8, actionData, &j);
+                            _ = try read(u8, actionData, &j); // unknown
                         },
                         0x19 => {
-                            j += 12;
+                            // select subgroup
+                            const itemId = try read(u32, actionData, &j);
+                            if (idCountMap_.get(itemId)) |count| {
+                                try idCountMap_.put(itemId, count + 1);
+                            }
+                            else {
+                                try idCountMap_.put(itemId, 1);
+                            }
+                            const objectId1 = try read(u32, actionData, &j);
+                            const objectId2 = try read(u32, actionData, &j);
                         },
                         0x1A => {
                             // pre subselection
                         },
                         0x1B => {
+                            // unknown
                             j += 9;
                         },
                         0x1C => {
+                            // select ground item
                             j += 9;
                         },
                         0x1D => {
+                            // cancel hero revival
                             j += 8;
                         },
                         0x1E => {
+                            // remove unit from building queue
                             j += 5;
                         },
                         0x21 => {
+                            // unknown
                             j += 8;
                         },
                         0x20, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
@@ -278,14 +342,26 @@ fn parseBlock(block: *Block, buf: []const u8, iPtr: *u32) !void
                         },
                         0x6B => {
                             // MMD
-                            // TODO all data
-                            break;
+                            // TODO this is my best guess about the data format
+                            const filename = (try readStringZ(actionData, &j)) orelse {
+                                return error.MMDNoFilename;
+                            };
+                            if (!std.mem.eql(u8, filename, "MMD.Dat")) {
+                                return error.MMDBadFilename;
+                            }
+                            const valKey = (try readStringZ(actionData, &j)) orelse {
+                                return error.MMDNoValKey;
+                            };
+                            const message = (try readStringZ(actionData, &j)) orelse {
+                                return error.MMDNoMessage;
+                            };
+                            const checksum = try read(u32, actionData, &j);
                         },
                         0x75 => {
                             _ = try read(u8, actionData, &j); // unknown
                         },
                         else => {
-                            std.log.err("Unknown action ID {X}", .{actionId});
+                            std.log.err("Unknown actionId={X} ind={} i={} j={}", .{actionId,  iPtr.*, i, j});
                             return error.UnknownActionId;
                         }
                     }
@@ -426,6 +502,17 @@ fn parseDecompressed(decompressed: []const u8, allocator: *std.mem.Allocator) !v
     }
 }
 
+const SortedSlot = struct
+{
+    k: u32,
+    v: u32,
+};
+
+fn lessThan(context: u32, lhs: SortedSlot, rhs: SortedSlot) bool
+{
+    return lhs.v < rhs.v;
+}
+
 pub fn main() void
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -538,10 +625,32 @@ pub fn main() void
         return;
     };
 
+    idCountMap_ = IdCountMapType.init(allocator);
+    defer idCountMap_.deinit();
     parseDecompressed(decompressed, allocator) catch |err| {
         std.log.err("Failed to parse decompressed replay data: {}", .{err});
         return;
     };
+
+    var sorted = std.ArrayList(SortedSlot).init(allocator);
+    defer sorted.deinit();
+    var it = idCountMap_.iterator();
+    while (it.next()) |kv| {
+        var ptr = sorted.addOne() catch |err| {
+            std.log.err("addOne failed", .{});
+            return;
+        };
+        ptr.k = kv.key_ptr.*;
+        ptr.v = kv.value_ptr.*;
+        //try sorted.append(SortedSlot {.k = kv.key_ptr.*, .v = kv.value_ptr.*});
+        //std.log.info("{s}={}", .{idToString(kv.key_ptr.*), kv.value_ptr.*});
+    }
+
+    const context: u32 = 0;
+    std.sort.sort(SortedSlot, sorted.items, context, lessThan);
+    for (sorted.items) |kv| {
+        std.log.info("{s}={}", .{idToString(kv.k), kv.v});
+    }
 }
 
 test
